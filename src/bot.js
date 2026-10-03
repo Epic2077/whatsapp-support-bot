@@ -1,0 +1,25 @@
+import qrcode from 'qrcode-terminal';
+import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
+import P from 'pino';
+import { config } from './config.js';
+import { askAI, availableProviders } from './ai.js';
+import { contextFor } from './knowledge.js';
+import { now } from './store.js';
+const isGroup = (jid) => jid?.endsWith('@g.us');
+const textOf = (message) => message?.conversation || message?.extendedTextMessage?.text || message?.imageMessage?.caption || '';
+const menu = `مدیریت ربات\n\n/admin stats - آمار کلی\n/admin leads - آخرین سرنخ‌ها\n/admin provider <liria|deepseek|gapgpt> - تغییر سرویس\n/admin broadcast <متن> - ارسال به گروه پشتیبانی\n/admin help - نمایش این راهنما`;
+export async function startBot(store, knowledge) {
+  const { state, saveCreds } = await useMultiFileAuthState(config.sessionDir); const sock = makeWASocket({ auth: state, logger: P({ level: 'silent' }), printQRInTerminal: false, browser: ['Support Bot', 'Chrome', '1.0.0'] }); sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => { if (qr) qrcode.generate(qr, { small: true }); if (connection === 'open') console.log('WhatsApp connected.'); if (connection === 'close' && lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) startBot(store, knowledge); });
+  sock.ev.on('messages.upsert', async ({ messages }) => { const message = messages[0]; if (!message?.message || message.key.fromMe || isGroup(message.key.remoteJid)) return; const input = textOf(message).trim(); if (input) await handleMessage(sock, store, knowledge, message.key.remoteJid, input); }); return sock;
+}
+async function handleMessage(sock, store, knowledge, jid, input) {
+  const data = store.get(); const contact = data.contacts[jid] || { jid, createdAt: now(), status: 'new' }; const conversation = data.conversations[jid] || { messages: [], lastActivity: now() }; conversation.lastActivity = now(); conversation.messages.push({ role: 'user', content: input, at: now() });
+  if (input.toLowerCase().startsWith('/admin ')) { await sock.sendMessage(jid, { text: await adminCommand(sock, store, jid, input.slice(7).trim()) }); await store.save(); return; }
+  if (!contact.name) { contact.name = input; contact.status = 'collecting_phone'; await sock.sendMessage(jid, { text: `ممنون ${input} عزیز 🌷\nلطفاً شماره تماس خود را با کد کشور ارسال کنید.` }); }
+  else if (!contact.phone) { contact.phone = input; contact.status = 'qualified'; await sock.sendMessage(jid, { text: 'ممنون، اطلاعات شما ثبت شد. چطور می‌توانم کمکتان کنم؟' }); }
+  else { try { const answer = await askAI(data.settings.provider, conversation.messages.slice(-12).map(({ role, content }) => ({ role, content })), contextFor(input, knowledge)); conversation.messages.push({ role: 'assistant', content: answer, at: now() }); data.usage[data.settings.provider] = (data.usage[data.settings.provider] || 0) + 1; await sock.sendMessage(jid, { text: answer }); } catch (error) { await sock.sendMessage(jid, { text: `در حال حاضر سرویس پاسخ‌گویی در دسترس نیست. درخواست شما ثبت شد تا کارشناس بررسی کند.\n(${error.message})` }); } }
+  data.contacts[jid] = contact; data.conversations[jid] = conversation; await store.save();
+}
+async function adminCommand(sock, store, jid, command) { const [password, action = 'help', ...args] = command.split(/\s+/); if (password !== config.adminPassword) return 'رمز مدیر نادرست است.'; const data = store.get(); if (action === 'help') return menu; if (action === 'stats') return `آمار ربات\nسرنخ‌ها: ${Object.keys(data.contacts).length}\nگفت‌وگوها: ${Object.keys(data.conversations).length}\nمصرف: ${JSON.stringify(data.usage)}\nسرویس فعال: ${data.settings.provider}`; if (action === 'leads') return Object.values(data.contacts).filter((c) => c.name && c.phone).slice(-20).reverse().map((c, i) => `${i + 1}. ${c.name} | ${c.phone} | ${c.jid}`).join('\n') || 'هنوز سرنخی ثبت نشده است.'; if (action === 'provider' && availableProviders().includes(args[0])) { data.settings.provider = args[0]; await store.save(); return `سرویس فعال به ${args[0]} تغییر کرد.`; } if (action === 'broadcast' && config.supportGroupJid) { await sock.sendMessage(config.supportGroupJid, { text: args.join(' ') }); return 'پیام به گروه پشتیبانی ارسال شد.'; } return action === 'provider' ? `سرویس موجود نیست. سرویس‌های آماده: ${availableProviders().join(', ') || 'هیچ‌کدام'}` : menu; }
+export async function sendLeadSummary(sock, store, jid) { if (!config.supportGroupJid) return; const data = store.get(); const c = data.contacts[jid]; const chat = data.conversations[jid]; if (!c?.name || !c.phone || !chat?.messages?.length) return; const transcript = chat.messages.slice(-12).map((m) => `${m.role === 'user' ? 'مشتری' : 'ربات'}: ${m.content}`).join('\n'); await sock.sendMessage(config.supportGroupJid, { text: `🔔 سرنخ جدید\nنام: ${c.name}\nتلفن: ${c.phone}\nواتساپ: ${jid}\n\nخلاصه مکالمه:\n${transcript.slice(-5000)}` }); }

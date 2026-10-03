@@ -1,0 +1,18 @@
+{
+  "name": "whatsapp-support-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Farsi-first WhatsApp AI customer support and lead capture bot.",
+  "scripts": {
+    "start": "node src/index.js",
+    "scrape": "node src/scrape.js",
+    "check": "node --check src/index.js && node --check src/bot.js && node --check src/config.js && node --check src/store.js && node --check src/ai.js && node --check src/knowledge.js && node --check src/scrape.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "dotenv": "^16.4.7",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
